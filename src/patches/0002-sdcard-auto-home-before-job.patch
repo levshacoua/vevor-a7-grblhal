@@ -1,0 +1,30 @@
+diff --git a/fs_stream.c b/fs_stream.c
+index c355ccf..58984dc 100644
+--- a/fs_stream.c
++++ b/fs_stream.c
+@@ -34,6 +34,8 @@
+ #include "grbl/protocol.h"
+ #include "grbl/state_machine.h"
+ #include "grbl/stream_file.h"
++#include "grbl/motion_control.h"
++#include "grbl/stepper.h"
+ #include "grbl/strutils.h"
+ #include "grbl/vfs.h"
+ #include "grbl/task.h"
+@@ -567,6 +569,16 @@ FLASHMEM status_code_t stream_file (sys_state_t state, char *fname)
+         retval = Status_SystemGClock;
+     else if(fname && vfs_stat(fname, &st) == 0) {
+ 
++        // VEVOR A7: auto-home before streaming a job if X/Y have not been homed yet
++        if(!st.st_mode.directory && state == STATE_IDLE && settings.homing.flags.enabled &&
++           (sys.homed.mask & (X_AXIS_BIT|Y_AXIS_BIT)) != (X_AXIS_BIT|Y_AXIS_BIT)) {
++            report_message("Homing before job", Message_Info);
++            if(mc_homing_cycle((axes_signals_t){0}) != Status_OK)
++                return Status_HomingDisabled;
++            state_set(STATE_IDLE);
++            st_go_idle();
++        }
++
+         if(st.st_mode.directory)
+             retval = vfs_chdir(fname) ? Status_FSDirNotFound : Status_OK;
+         else if(file_open(fname)) {

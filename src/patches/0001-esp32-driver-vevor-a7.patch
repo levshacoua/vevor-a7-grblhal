@@ -1,0 +1,231 @@
+diff --git a/main/driver.c b/main/driver.c
+index fb6ca97..b1fdf07 100644
+--- a/main/driver.c
++++ b/main/driver.c
+@@ -163,7 +163,7 @@ static pwm_spindle_t pwm_spindle = {
+     .channel = {
+         .gpio_num = SPINDLE_PWM_PIN,
+ #if CONFIG_IDF_TARGET_ESP32S3
+-        .speed_mode = LEDC_SPEED_MODE_MAX,
++        .speed_mode = LEDC_LOW_SPEED_MODE,
+ #else
+         .speed_mode = LEDC_HIGH_SPEED_MODE,
+ #endif
+@@ -199,7 +199,7 @@ static pwm_spindle_t pwm_spindle1 = {
+     .channel = {
+         .gpio_num = SPINDLE1_PWM_PIN,
+ #if CONFIG_IDF_TARGET_ESP32S3
+-        .speed_mode = LEDC_SPEED_MODE_MAX,
++        .speed_mode = LEDC_LOW_SPEED_MODE,
+ #else
+         .speed_mode = LEDC_HIGH_SPEED_MODE,
+ #endif
+@@ -3414,6 +3414,39 @@ bool driver_init (void)
+ 
+     rtc_clk_cpu_freq_get_config(&cpu);
+ 
++#ifdef HW_WATCHDOG_PUMP_PIN
++    // VEVOR A7: charge-pump watchdog needs a continuous square wave from power-up.
++    {
++        ledc_timer_config_t wd_timer = {
++            .speed_mode = LEDC_LOW_SPEED_MODE,
++            .duty_resolution = LEDC_TIMER_8_BIT,
++            .timer_num = LEDC_TIMER_3,
++            .freq_hz = 8000,
++            .clk_cfg = LEDC_AUTO_CLK
++        };
++        ledc_timer_config(&wd_timer);
++        ledc_channel_config_t wd_channel = {
++            .gpio_num = HW_WATCHDOG_PUMP_PIN,
++            .speed_mode = LEDC_LOW_SPEED_MODE,
++            .channel = LEDC_CHANNEL_7,
++            .timer_sel = LEDC_TIMER_3,
++            .duty = 128,
++            .hpoint = 0
++        };
++        ledc_channel_config(&wd_channel);
++    }
++#if (DRIVER_SPINDLE_ENABLE & SPINDLE_PWM) && defined(SPINDLE_PWM_PIN)
++    // VEVOR A7: the laser pad is left in hardware HOLD by boot - release before LEDC claims it.
++    gpio_hold_dis(SPINDLE_PWM_PIN);
++    gpio_reset_pin(SPINDLE_PWM_PIN);
++    // keep the laser TTL line firmly LOW until the spindle PWM attaches
++    gpio_pullup_dis(SPINDLE_PWM_PIN);
++    gpio_pulldown_en(SPINDLE_PWM_PIN);
++    gpio_set_direction(SPINDLE_PWM_PIN, GPIO_MODE_OUTPUT);
++    gpio_set_level(SPINDLE_PWM_PIN, 0);
++#endif
++#endif
++
+ #if CONFIG_IDF_TARGET_ESP32S3
+     hal.info = "ESP32-S3";
+ #else
+diff --git a/main/wifi.c b/main/wifi.c
+index 2cbd37f..c7a0363 100644
+--- a/main/wifi.c
++++ b/main/wifi.c
+@@ -684,12 +684,15 @@ bool wifi_start (void)
+ 
+         esp_netif_set_hostname(sta_netif, wifi.sta.network.hostname);
+ 
+-        esp_netif_dhcps_stop(sta_netif);
+-    
+-        wifi.sta.network.ip_mode = IpMode_DHCP; // For now...
++        // VEVOR A7: honor the configured STA IP mode ($321) instead of forcing DHCP.
++        // The DHCP *client* must be stopped before a static address can be set.
++        esp_netif_dhcpc_stop(sta_netif);
++
++        if(wifi.sta.network.ip_mode > IpMode_DHCP) // AutoIP not supported
++            wifi.sta.network.ip_mode = IpMode_DHCP;
+ 
+         if(init_adapter(sta_netif, &wifi.sta.network))
+-            esp_netif_dhcps_start(sta_netif);
++            esp_netif_dhcpc_start(sta_netif);
+ 
+         memset(&wifi_sta_config, 0, sizeof(wifi_config_t));
+ 
+@@ -860,7 +863,8 @@ static const setting_detail_t ethernet_settings[] = {
+     { Setting_Wifi_AP_BSSID, Group_Networking_Wifi, "WiFi Access Point (AP) BSSID", NULL, Format_String, "x(17)", "17", "17", Setting_NonCoreFn, wifi_set_bssid, wifi_get_bssid, NULL, { .allow_null = On, .reboot_required = On } },
+     { Setting_WiFi_STA_Password, Group_Networking_Wifi, "WiFi Station (STA) Password", NULL, Format_Password, "x(32)", "8", "32", Setting_NonCore, &wifi.sta.password, NULL, NULL, { .allow_null = On } },
+     { Setting_Hostname3, Group_Networking, "Hostname", NULL, Format_String, "x(64)", NULL, "64", Setting_NonCore, &wifi.sta.network.hostname, NULL, NULL, { .reboot_required = On } },
+-/*    { Setting_IpMode, Group_Networking, "IP Mode", NULL, Format_RadioButtons, "Static,DHCP,AutoIP", NULL, NULL, Setting_NonCoreFn, wifi_set_int, wifi_get_int, NULL, false }, */
++    // VEVOR A7: STA IP mode ($321) enabled so a static address can be configured
++    { Setting_IpMode3, Group_Networking, "IP Mode", NULL, Format_RadioButtons, "Static,DHCP", NULL, NULL, Setting_NonCoreFn, wifi_set_int, wifi_get_int, NULL, { .reboot_required = On } },
+     { Setting_IpAddress3, Group_Networking, "IP Address", NULL, Format_IPv4, NULL, NULL, NULL, Setting_NonCoreFn, wifi_set_ip, wifi_get_ip, NULL, { .reboot_required = On } },
+     { Setting_Gateway3, Group_Networking, "Gateway", NULL, Format_IPv4, NULL, NULL, NULL, Setting_NonCoreFn, wifi_set_ip, wifi_get_ip, NULL, { .reboot_required = On } },
+     { Setting_NetMask3, Group_Networking, "Netmask", NULL, Format_IPv4, NULL, NULL, NULL, Setting_NonCoreFn, wifi_set_ip, wifi_get_ip, NULL, { .reboot_required = On } },
+@@ -905,7 +909,7 @@ static const setting_descr_t ethernet_settings_descr[] = {
+     { Setting_Wifi_AP_BSSID, "Optional WiFi Access Point BSSID (MAC) to connect to, colon delimited values." },
+     { Setting_WiFi_STA_Password, "WiFi Station (STA) Password." },
+     { Setting_Hostname3, "Network hostname." },
+-//    { Setting_IpMode, "IP Mode." },
++    { Setting_IpMode3, "IP mode for the WiFi station: static address or DHCP." },
+     { Setting_IpAddress3, "Static IP address." },
+     { Setting_Gateway3, "Static gateway address." },
+     { Setting_NetMask3, "Static netmask." },
+@@ -974,6 +978,10 @@ static status_code_t wifi_set_int (setting_id_t setting, uint_fast16_t value)
+             wifi.sta.network.services.mask = wifi.ap.network.services.mask = (uint8_t)value & allowed_services.mask;
+             break;
+ 
++        case Setting_IpMode3:
++            wifi.sta.network.ip_mode = (ip_mode_t)value;
++            break;
++
+ #if TELNET_ENABLE
+         case Setting_TelnetPort3:
+             wifi.sta.network.telnet_port = wifi.ap.network.telnet_port = (uint16_t)value;
+@@ -1014,6 +1022,10 @@ static uint_fast16_t wifi_get_int (setting_id_t setting)
+             value = wifi.sta.network.services.mask & allowed_services.mask;
+             break;
+ 
++        case Setting_IpMode3:
++            value = wifi.sta.network.ip_mode;
++            break;
++
+ #if TELNET_ENABLE
+         case Setting_TelnetPort3:
+             value = wifi.sta.network.telnet_port;
+diff --git a/platformio.ini b/platformio.ini
+index 9a4c827..fc1b212 100644
+--- a/platformio.ini
++++ b/platformio.ini
+@@ -88,7 +88,7 @@ build_flags =
+     -DTELNET_ENABLE=1
+     -DWEBSOCKET_ENABLE=1
+     -DFTP_ENABLE=1
+-    -DLITTLEFS_ENABLE=1
++    -DLITTLEFS_ENABLE=2
+     -DCONTROL_ENABLE=0
+     -DHC595_ENABLE=1
+     -DRGB_LED_ENABLE=2
+@@ -195,7 +195,7 @@ build_flags =
+     -DTELNET_ENABLE=1
+     -DWEBSOCKET_ENABLE=1
+     -DFTP_ENABLE=1
+-    -DLITTLEFS_ENABLE=1
++    -DLITTLEFS_ENABLE=2
+     -DCONTROL_ENABLE=0
+     -DHC595_ENABLE=1
+     -DRGB_LED_ENABLE=2
+@@ -301,7 +301,7 @@ build_flags =
+     -DTELNET_ENABLE=1
+     -DWEBSOCKET_ENABLE=1
+     -DFTP_ENABLE=1
+-    -DLITTLEFS_ENABLE=1
++    -DLITTLEFS_ENABLE=2
+     -DCONTROL_ENABLE=0
+     -DHC595_ENABLE=1
+     -DRGB_LED_ENABLE=2
+@@ -362,3 +362,72 @@ board_build.flash_mode = dio
+ board_build.f_flash = 40000000L
+ board_upload.flash_size = 4MB
+ monitor_speed=115200
++
++[env:vevor_a7]
++platform = espressif32 @ 5.3.0  ; ESP-IDF v4.4.x
++framework = espidf
++board = esp32-s3-devkitc-1
++board_build.partitions = partitions_s3_8m.csv
++
++board_build.embed_files =
++    main/embedded/favicon.ico
++    main/embedded/ap_login.html
++    main/embedded/index.html.gz
++
++board_build.cmake_extra_args =
++    -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp32s3;sdkconfig_s3_8m"
++
++extra_scripts =
++    pre:scripts/set_progname.py
++
++build_flags =
++    -DCONFIG_IDF_TARGET_ESP32S3
++    -DBOARD_MY_MACHINE
++    -DOVERRIDE_MY_MACHINE
++    -DHW_WATCHDOG_PUMP_PIN=GPIO_NUM_13
++    -DWIFI_ENABLE=1
++    -DNETWORKING_ENABLE=1
++    -DTELNET_ENABLE=1
++    -DWEBSOCKET_ENABLE=1
++    -DHTTP_ENABLE=1
++    -DWEBUI_ENABLE=3
++    -DLITTLEFS_ENABLE=2
++    -DCONTROL_ENABLE=0
++    -DPROBE_ENABLE=0
++    -DDRIVER_SPINDLE_ENABLE=3
++    -DSDCARD_ENABLE=1
++    -DMDNS_ENABLE=1
++    -DDEFAULT_LASER_MODE=1
++    -DDEFAULT_SPINDLE_RPM_MAX=1000.0f
++    -DDEFAULT_SPINDLE_PWM_FREQ=1000
++    -DDEFAULT_STEPPER_IDLE_LOCK_TIME=255
++    -DDEFAULT_X_STEPS_PER_MM=80.0
++    -DDEFAULT_Y_STEPS_PER_MM=80.0
++    -DDEFAULT_Z_STEPS_PER_MM=80.0
++    -DDEFAULT_X_MAX_RATE=6000.0
++    -DDEFAULT_Y_MAX_RATE=6000.0
++    -DDEFAULT_Z_MAX_RATE=600.0
++    -DDEFAULT_X_ACCELERATION=500.0
++    -DDEFAULT_Y_ACCELERATION=500.0
++    -DDEFAULT_Z_ACCELERATION=100.0
++    -DDEFAULT_X_MAX_TRAVEL=410.0
++    -DDEFAULT_Y_MAX_TRAVEL=400.0
++    -DDEFAULT_Z_MAX_TRAVEL=10.0
++    -DDEFAULT_HOMING_ENABLE=1
++    -DDEFAULT_HOMING_INIT_LOCK=0
++    -DDEFAULT_HOMING_SINGLE_AXIS_COMMANDS=1
++    -DDEFAULT_HOMING_CYCLE_0=2
++    -DDEFAULT_HOMING_CYCLE_1=1
++    -DDEFAULT_HOMING_PULLOFF=3
++    -DDEFAULT_HOMING_SEEK_RATE=1500
++    -DDEFAULT_HOMING_FEED_RATE=100
++    -DDEFAULT_SOFT_LIMIT_ENABLE=0
++    -DDEFAULT_HARD_LIMIT_ENABLE=0
++    -DBUILD_INFO='"VEVOR A7 custom by Vlad+Claude"'
++
++board_build.flash_mode = dio
++board_build.f_flash = 40000000L
++board_upload.flash_size = 8MB
++monitor_speed=115200
++
++lib_compat_mode = off
