@@ -39,7 +39,7 @@ MCU: **ESP32-S3-WROOM-1U (N8R2: 8 MB flash, 2 MB PSRAM)**, USB via CH340G (UART0
 
 **Known trap:** FluidNC v4.0.3 boot-loops (LoadProhibited) on ESP32-S3 with I2SO output — the shift-register motors cannot work there until that is fixed upstream. grblHAL's `i2s_out_s3` works.
 
-**Upstream grblHAL bug fixed here:** on ESP32-S3 the spindle/laser LEDC *channel* config used `LEDC_SPEED_MODE_MAX` (an invalid value — it is the enum count, not a mode); the laser PWM never starts. The fix (`LEDC_LOW_SPEED_MODE`) is included in patch 0001 and will be submitted upstream.
+**Upstream grblHAL bug fixed here:** on ESP32-S3 the spindle/laser LEDC *channel* config used `LEDC_SPEED_MODE_MAX` (an invalid value — it is the enum count, not a mode); the laser PWM never starts. The fix (`LEDC_LOW_SPEED_MODE`) is included in patch 0001 and was [merged upstream](https://github.com/grblHAL/ESP32/pull/214) on 2026-08-17.
 
 ## Flashing
 
